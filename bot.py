@@ -9,6 +9,7 @@ from pydub import AudioSegment
 from telegram import Update
 from telegram.ext import Updater, MessageHandler, Filters, CallbackContext
 import openai
+from openai.error import RateLimitError, OpenAIError
 
 # Переменные окружения (Render -> Environment, Web Service)
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
@@ -16,11 +17,11 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL")  # без https://, напр.: my-bot.onrender.com
 PORT = int(os.environ.get("PORT", "443"))
 
-# Удаляем возможные префиксы
+# Удаляем префиксы из URL, если есть
 if RENDER_EXTERNAL_URL:
     RENDER_EXTERNAL_URL = RENDER_EXTERNAL_URL.replace("https://", "").replace("http://", "")
 
-# Настройка логирования
+# Логирование
 logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO
 )
@@ -37,20 +38,41 @@ def transcribe_voice(path: str) -> str:
 
 
 def handle_voice(update: Update, context: CallbackContext):
-    """Скачивает голосовое, конвертирует и отправляет расшифровку."""
+    """Скачивает голосовое, конвертирует, расшифровывает и отправляет текст или ошибку."""
     voice = update.message.voice or update.message.audio
     tg_file = context.bot.get_file(voice.file_id)
 
+    # Сохраняем ogg во временный файл
     with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as ogg_f:
         tg_file.download(custom_path=ogg_f.name)
         ogg_path = ogg_f.name
 
+    # Конвертируем в wav (требуется ffmpeg)
     wav_path = ogg_path.replace(".ogg", ".wav")
     AudioSegment.from_file(ogg_path).export(wav_path, format="wav")
 
-    text = transcribe_voice(wav_path)
+    # Расшифровка с обработкой ошибок квоты
+    try:
+        text = transcribe_voice(wav_path)
+    except RateLimitError:
+        update.message.reply_text(
+            "Извини, но квота OpenAI закончилась или превысила лимит. "
+            "Попробуй позже, когда пополнишь баланс в своём личном кабинете."
+        )
+        # Чистим файлы и выходим
+        os.remove(ogg_path)
+        os.remove(wav_path)
+        return
+    except OpenAIError as e:
+        update.message.reply_text(f"Ошибка сервиса распознавания: {e}")
+        os.remove(ogg_path)
+        os.remove(wav_path)
+        return
+
+    # Отправляем результат пользователю
     update.message.reply_text(text)
 
+    # Удаляем временные файлы
     os.remove(ogg_path)
     os.remove(wav_path)
 
@@ -60,11 +82,11 @@ def main():
     dp = updater.dispatcher
     dp.add_handler(MessageHandler(Filters.voice | Filters.audio, handle_voice))
 
-    # Формируем корректный URL для webhook
+    # Полный URL webhook
     webhook_url = f"https://{RENDER_EXTERNAL_URL}/{TELEGRAM_TOKEN}"
     logging.info(f"Setting webhook: {webhook_url}")
 
-    # Запускаем webhook с указанием URL (избегаем default 0.0.0.0)
+    # Запуск webhook
     updater.start_webhook(
         listen="0.0.0.0",
         port=PORT,
