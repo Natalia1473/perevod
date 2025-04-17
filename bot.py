@@ -74,13 +74,19 @@ def handle_voice(update: Update, context: CallbackContext):
         wav_path = ogg_path.replace(".ogg", ".wav")
         AudioSegment.from_file(ogg_path).export(wav_path, format="wav")
 
-        # Транскрибируем
-        orig_text = transcribe_voice(wav_path).strip()
-        logging.info(f"Original transcript: {orig_text}")
+       orig_text = transcribe_voice(wav_path)
+if not orig_text:
+    update.message.reply_text("Не удалось распознать речь в этом аудио.")
+    return
 
-        # Переводим с явным указанием источника 'ru'
-        translated = translator.translate(orig_text, src='ru', dest='en').text
-        logging.info(f"Translated text: {translated}")
+orig_text = orig_text.strip()
+logging.info(f"Original transcript: {orig_text}")
+
+translated = translator.translate(orig_text, src='ru', dest='en').text
+logging.info(f"Translated text: {translated}")
+
+response = f"Original: {orig_text}\nTranslation: {translated}"
+update.message.reply_text(response)
 
         # Отправляем оба текста
         response = f"Original: {orig_text}\nTranslation: {translated}"
