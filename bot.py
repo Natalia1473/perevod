@@ -44,7 +44,6 @@ async def _transcribe_with_deepgram(path: str) -> str:
     with open(path, 'rb') as f:
         audio_bytes = f.read()
     source = {'buffer': audio_bytes, 'mimetype': 'audio/wav'}
-    # Добавляем language='ru' для корректного распознавания русской речи
     options = {'punctuate': True, 'language': 'ru'}
     response = await dg_client.transcription.prerecorded(source, options)
     return response['results']['channels'][0]['alternatives'][0]['transcript']
@@ -60,7 +59,7 @@ def transcribe_voice(path: str) -> str:
 
 
 def handle_voice(update: Update, context: CallbackContext):
-    """Скачивает голосовое, конвертирует, транскрибирует и переводит. Возвращает и оригинал, и перевод."""
+    """Скачивает голосовое, конвертирует, транскрибирует и переводит. Отправляет только перевод."""
     ogg_path = wav_path = None
     try:
         voice = update.message.voice or update.message.audio
@@ -78,7 +77,7 @@ def handle_voice(update: Update, context: CallbackContext):
         # Транскрибируем
         orig_text = transcribe_voice(wav_path)
         if not orig_text:
-            update.message.reply_text("Не удалось распознать речь в этом аудио.")
+            update.message.reply_text("Не удалось распознать речь.")
             return
         orig_text = orig_text.strip()
         logging.info(f"Original transcript: {orig_text}")
@@ -87,9 +86,8 @@ def handle_voice(update: Update, context: CallbackContext):
         translated = translator.translate(orig_text, src='ru', dest='en').text
         logging.info(f"Translated text: {translated}")
 
-        # Отправляем оба текста
-        response = f"Original: {orig_text}\nTranslation: {translated}"
-        update.message.reply_text(response)
+        # Отправляем только перевод с меткой
+        update.message.reply_text(f"Translated text: {translated}")
 
     except TelegramError as te:
         logging.error(f"Telegram error: {te}")
