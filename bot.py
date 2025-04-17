@@ -10,27 +10,35 @@ from telegram import Update
 from telegram.ext import Updater, MessageHandler, Filters, CallbackContext
 import openai
 
-# Переменные окружения (Render -> Environment)
-TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
-OPENAI_API_KEY = os.environ["OPENAI_API_KEY"]
-# Только домен, без протокола, напр.: your-bot.onrender.com
-RENDER_EXTERNAL_URL = os.environ["RENDER_EXTERNAL_URL"]
-PORT = int(os.environ.get("PORT", "8443"))
+# Переменные окружения (Render -> Environment, Web Service)
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+# Домен сервиса без протокола, напр.: my-bot.onrender.com
+RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL")
+# Порт для webhook (80, 88, 443 или 8443)
+PORT = int(os.environ.get("PORT", "443"))
 
-# Удаляем возможные префиксы
-RENDER_EXTERNAL_URL = RENDER_EXTERNAL_URL.replace("https://", "").replace("http://", "")
+# Удаляем возможные префиксы из URL
+if RENDER_EXTERNAL_URL:
+    RENDER_EXTERNAL_URL = RENDER_EXTERNAL_URL.replace("https://", "").replace("http://", "")
 
+# Настройка OpenAI
 openai.api_key = OPENAI_API_KEY
 
+# Логирование
 logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO
 )
+# Вывод ENV для отладки
+logging.info(f"Env vars -> RENDER_EXTERNAL_URL={RENDER_EXTERNAL_URL!r}, PORT={PORT!r}, TELEGRAM_TOKEN present={bool(TELEGRAM_TOKEN)}")
+
 
 def transcribe_voice(path: str) -> str:
     """Отправляет аудио в Whisper и возвращает текст."""
     with open(path, "rb") as audio_file:
         resp = openai.Audio.transcribe(model="whisper-1", file=audio_file)
     return resp["text"]
+
 
 def handle_voice(update: Update, context: CallbackContext):
     """Скачивает голосовое, конвертирует и отправляет расшифровку."""
@@ -54,25 +62,27 @@ def handle_voice(update: Update, context: CallbackContext):
     os.remove(ogg_path)
     os.remove(wav_path)
 
+
 def main():
     updater = Updater(TELEGRAM_TOKEN, use_context=True)
     dp = updater.dispatcher
     dp.add_handler(MessageHandler(Filters.voice | Filters.audio, handle_voice))
 
-    # запускаем локальный webhook-сервер
+    # Запуск webhook-сервера
     updater.start_webhook(
         listen="0.0.0.0",
         port=PORT,
         url_path=TELEGRAM_TOKEN
     )
 
-    # вручную настраиваем webhook
+    # Установка webhook в Telegram
     webhook_url = f"https://{RENDER_EXTERNAL_URL}/{TELEGRAM_TOKEN}"
     logging.info(f"Setting webhook: {webhook_url}")
     updater.bot.set_webhook(webhook_url)
 
     logging.info("Bot started via webhook")
     updater.idle()
+
 
 if __name__ == "__main__":
     main()
