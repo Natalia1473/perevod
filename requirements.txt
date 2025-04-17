@@ -1,0 +1,3 @@
+python-telegram-bot==13.14
+pydub==0.25.1
+openai==0.27.0
