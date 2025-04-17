@@ -4,16 +4,19 @@
 import os
 import tempfile
 import logging
+import asyncio
 
 from pydub import AudioSegment
 from telegram import Update
 from telegram.ext import Updater, MessageHandler, Filters, CallbackContext
-import openai
-from openai.error import RateLimitError, OpenAIError
+from deepgram import Deepgram
+from telegram.error import TelegramError
+
+# Требуется установить зависимость: pip install deepgram-sdk
 
 # Переменные окружения (Render -> Environment, Web Service)
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY")  # ключ Deepgram
 RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL")  # без https://, напр.: my-bot.onrender.com
 PORT = int(os.environ.get("PORT", "443"))
 
@@ -25,56 +28,63 @@ if RENDER_EXTERNAL_URL:
 logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO
 )
-logging.info(f"Env vars -> RENDER_EXTERNAL_URL={RENDER_EXTERNAL_URL!r}, PORT={PORT!r}, TELEGRAM_TOKEN set={bool(TELEGRAM_TOKEN)}")
+logging.info(f"Env vars -> RENDER_EXTERNAL_URL={RENDER_EXTERNAL_URL!r}, PORT={PORT!r}, TELEGRAM_TOKEN set={bool(TELEGRAM_TOKEN)}, DEEPGRAM_API_KEY set={bool(DEEPGRAM_API_KEY)}")
 
-# Инициализация OpenAI
-openai.api_key = OPENAI_API_KEY
+# Инициализация Deepgram SDK
+dg_client = Deepgram(DEEPGRAM_API_KEY)
+
+async def _transcribe_with_deepgram(path: str) -> str:
+    # Читаем файл и готовим источник для API
+    audio_bytes = open(path, 'rb').read()
+    source = {'buffer': audio_bytes, 'mimetype': 'audio/wav'}
+    # Опции: автоматическая пунктуация и распознавание языка (auto)
+    options = {'punctuate': True}
+    response = await dg_client.transcription.prerecorded(source, options)
+    # Текст в первом канале, первой альтернативе
+    return response['results']['channels'][0]['alternatives'][0]['transcript']
+
 
 def transcribe_voice(path: str) -> str:
-    """Отправляет аудио в Whisper и возвращает текст."""
-    with open(path, "rb") as audio_file:
-        resp = openai.Audio.transcribe(model="whisper-1", file=audio_file)
-    return resp["text"]
+    """Синхронная обёртка для асинхронного вызова Deepgram."""
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(_transcribe_with_deepgram(path))
+    finally:
+        loop.close()
 
 
 def handle_voice(update: Update, context: CallbackContext):
-    """Скачивает голосовое, конвертирует, расшифровывает и отправляет текст или ошибку."""
-    voice = update.message.voice or update.message.audio
-    tg_file = context.bot.get_file(voice.file_id)
-
-    # Сохраняем ogg во временный файл
-    with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as ogg_f:
-        tg_file.download(custom_path=ogg_f.name)
-        ogg_path = ogg_f.name
-
-    # Конвертируем в wav (требуется ffmpeg)
-    wav_path = ogg_path.replace(".ogg", ".wav")
-    AudioSegment.from_file(ogg_path).export(wav_path, format="wav")
-
-    # Расшифровка с обработкой ошибок квоты
+    """Скачивает голосовое, конвертирует, транскрибирует и отвечает текстом."""
     try:
+        voice = update.message.voice or update.message.audio
+        tg_file = context.bot.get_file(voice.file_id)
+
+        # Сохраняем ogg во временный файл
+        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as ogg_f:
+            tg_file.download(custom_path=ogg_f.name)
+            ogg_path = ogg_f.name
+
+        # Конвертируем в wav
+        wav_path = ogg_path.replace(".ogg", ".wav")
+        AudioSegment.from_file(ogg_path).export(wav_path, format="wav")
+
+        # Транскрибируем через Deepgram
         text = transcribe_voice(wav_path)
-    except RateLimitError:
-        update.message.reply_text(
-            "Извини, но квота OpenAI закончилась или превысила лимит. "
-            "Попробуй позже, когда пополнишь баланс в своём личном кабинете."
-        )
-        # Чистим файлы и выходим
-        os.remove(ogg_path)
-        os.remove(wav_path)
-        return
-    except OpenAIError as e:
-        update.message.reply_text(f"Ошибка сервиса распознавания: {e}")
-        os.remove(ogg_path)
-        os.remove(wav_path)
-        return
+        update.message.reply_text(text)
 
-    # Отправляем результат пользователю
-    update.message.reply_text(text)
-
-    # Удаляем временные файлы
-    os.remove(ogg_path)
-    os.remove(wav_path)
+    except TelegramError as te:
+        logging.error(f"Telegram error: {te}")
+    except Exception as e:
+        logging.error(f"Error in transcription: {e}")
+        try:
+            update.message.reply_text("Ошибка при распознавании аудио.")
+        except Exception:
+            pass
+    finally:
+        # Удаляем временные файлы
+        for path in (locals().get('ogg_path'), locals().get('wav_path')):
+            if path and os.path.exists(path):
+                os.remove(path)
 
 
 def main():
