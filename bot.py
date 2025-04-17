@@ -20,10 +20,10 @@ from telegram.error import TelegramError
 # Переменные окружения (Render -> Environment)
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY")
-RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL")  # без http://
+RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL")  # без протокола, напр.: my-bot.onrender.com
 PORT = int(os.environ.get("PORT", "443"))
 
-# Обрезаем протокол, если случайно добавили
+# Обрезаем префиксы из URL
 if RENDER_EXTERNAL_URL:
     RENDER_EXTERNAL_URL = RENDER_EXTERNAL_URL.replace("https://", "").replace("http://", "")
 
@@ -34,8 +34,10 @@ logging.info(
     f"TOKEN set={bool(TELEGRAM_TOKEN)}, DEEPGRAM_API_KEY set={bool(DEEPGRAM_API_KEY)}"
 )
 
-# Инициируем Deepgram и Translator
+# Инициализация Deepgram и Translator
+# Deepgram SDK v2:
 dg_client = Deepgram(DEEPGRAM_API_KEY)
+# Google Translate:
 translator = Translator()
 
 async def _transcribe_with_deepgram(path: str) -> str:
@@ -57,29 +59,39 @@ def transcribe_voice(path: str) -> str:
 
 
 def handle_voice(update: Update, context: CallbackContext):
-    """Скачивает голосовое, конвертирует, транскрибирует и переводит."""
+    """Скачивает голосовое, конвертирует, транскрибирует и переводит. Возвращает и оригинал, и перевод."""
     ogg_path = wav_path = None
     try:
         voice = update.message.voice or update.message.audio
         tg_file = context.bot.get_file(voice.file_id)
 
+        # Сохраняем ogg
         with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as ogg_f:
             tg_file.download(custom_path=ogg_f.name)
             ogg_path = ogg_f.name
 
+        # Конвертируем в wav
         wav_path = ogg_path.replace(".ogg", ".wav")
         AudioSegment.from_file(ogg_path).export(wav_path, format="wav")
 
-        orig_text = transcribe_voice(wav_path)
-        translated = translator.translate(orig_text, dest='en').text
-        update.message.reply_text(translated)
+        # Транскрибируем
+        orig_text = transcribe_voice(wav_path).strip()
+        logging.info(f"Original transcript: {orig_text}")
+
+        # Переводим с явным указанием источника 'ru'
+        translated = translator.translate(orig_text, src='ru', dest='en').text
+        logging.info(f"Translated text: {translated}")
+
+        # Отправляем оба текста
+        response = f"Original: {orig_text}\nTranslation: {translated}"
+        update.message.reply_text(response)
 
     except TelegramError as te:
         logging.error(f"Telegram error: {te}")
     except Exception as e:
-        logging.error(f"Error in transcription/translation: {e}")
+        logging.error(f"Error during transcription/translation: {e}")
         try:
-            update.message.reply_text("Ошибка при распознавании или переводе аудио.")
+            update.message.reply_text("Ошибка при обработке аудио.")
         except Exception:
             pass
     finally:
@@ -93,6 +105,7 @@ def main():
     dp = updater.dispatcher
     dp.add_handler(MessageHandler(Filters.voice | Filters.audio, handle_voice))
 
+    # Формируем webhook URL
     webhook_url = f"https://{RENDER_EXTERNAL_URL}/{TELEGRAM_TOKEN}"
     logging.info(f"Setting webhook: {webhook_url}")
 
