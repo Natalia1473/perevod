@@ -13,7 +13,7 @@ from deepgram import Deepgram
 from googletrans import Translator
 from telegram.error import TelegramError
 
-# Убедись, что в requirements.txt указаны:
+# В requirements.txt:
 # deepgram-sdk==2.12.0
 # googletrans==4.0.0-rc1
 
@@ -23,16 +23,13 @@ DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY")
 RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL")  # без протокола
 PORT = int(os.environ.get("PORT", "443"))
 
-# Обрезаем префиксы из URL
+# Обрезаем лишние префиксы из URL
 if RENDER_EXTERNAL_URL:
     RENDER_EXTERNAL_URL = RENDER_EXTERNAL_URL.replace("https://", "").replace("http://", "")
 
 # Логирование
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
-logging.info(
-    f"Env -> RENDER_EXTERNAL_URL={RENDER_EXTERNAL_URL!r}, PORT={PORT!r}, "
-    f"TOKEN set={bool(TELEGRAM_TOKEN)}, DEEPGRAM_API_KEY set={bool(DEEPGRAM_API_KEY)}"
-)
+logging.info(f"Env -> RENDER_EXTERNAL_URL={RENDER_EXTERNAL_URL!r}, PORT={PORT!r}, TOKEN set={bool(TELEGRAM_TOKEN)}, DEEPGRAM_API_KEY set={bool(DEEPGRAM_API_KEY)}")
 
 # Инициализация Deepgram SDK v2
 dg_client = Deepgram(DEEPGRAM_API_KEY)
@@ -44,7 +41,7 @@ async def _transcribe_with_deepgram(path: str) -> str:
     with open(path, 'rb') as f:
         audio_bytes = f.read()
     source = {'buffer': audio_bytes, 'mimetype': 'audio/wav'}
-    options = {'punctuate': True, 'language': 'ru'}
+    options = {'punctuate': True, 'language': 'auto'}  # автоопределение языка
     response = await dg_client.transcription.prerecorded(source, options)
     return response['results']['channels'][0]['alternatives'][0]['transcript']
 
@@ -59,7 +56,7 @@ def transcribe_voice(path: str) -> str:
 
 
 def handle_voice(update: Update, context: CallbackContext):
-    """Скачивает голосовое, конвертирует, транскрибирует и переводит. Отправляет только перевод."""
+    """Скачивает голосовое, конвертирует, транскрибирует и переводит в русский. Отправляет только текст перевода."""
     ogg_path = wav_path = None
     try:
         voice = update.message.voice or update.message.audio
@@ -74,20 +71,15 @@ def handle_voice(update: Update, context: CallbackContext):
         wav_path = ogg_path.replace(".ogg", ".wav")
         AudioSegment.from_file(ogg_path).export(wav_path, format="wav")
 
-        # Транскрибируем
+        # Транскрибируем аудио
         orig_text = transcribe_voice(wav_path)
         if not orig_text:
             update.message.reply_text("Не удалось распознать речь.")
             return
-        orig_text = orig_text.strip()
-        logging.info(f"Original transcript: {orig_text}")
 
-        # Переводим с указанием исходного языка 'ru'
-        translated = translator.translate(orig_text, src='ru', dest='en').text
-        logging.info(f"Translated text: {translated}")
-
-        # Отправляем только перевод с меткой
-        update.message.reply_text(f"Translated text: {translated}")
+        # Переводим (на русский)
+        translated = translator.translate(orig_text, dest='ru').text.strip()
+        update.message.reply_text(translated)
 
     except TelegramError as te:
         logging.error(f"Telegram error: {te}")
