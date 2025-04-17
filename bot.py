@@ -10,42 +10,45 @@ from pydub import AudioSegment
 from telegram import Update
 from telegram.ext import Updater, MessageHandler, Filters, CallbackContext
 from deepgram import Deepgram
+from googletrans import Translator
 from telegram.error import TelegramError
 
-# Требуется установить зависимость: pip install deepgram-sdk
+# Убедись, что в requirements.txt указаны:
+# deepgram-sdk==2.12.0
+# googletrans==4.0.0-rc1
 
-# Переменные окружения (Render -> Environment, Web Service)
+# Переменные окружения (Render -> Environment)
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY")  # ключ Deepgram
-RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL")  # без https://, напр.: my-bot.onrender.com
+DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY")
+RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL")  # без http://
 PORT = int(os.environ.get("PORT", "443"))
 
-# Удаляем префиксы из URL, если есть
+# Обрезаем протокол, если случайно добавили
 if RENDER_EXTERNAL_URL:
     RENDER_EXTERNAL_URL = RENDER_EXTERNAL_URL.replace("https://", "").replace("http://", "")
 
 # Логирование
-logging.basicConfig(
-    format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO
+logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
+logging.info(
+    f"Env -> RENDER_EXTERNAL_URL={RENDER_EXTERNAL_URL!r}, PORT={PORT!r}, "
+    f"TOKEN set={bool(TELEGRAM_TOKEN)}, DEEPGRAM_API_KEY set={bool(DEEPGRAM_API_KEY)}"
 )
-logging.info(f"Env vars -> RENDER_EXTERNAL_URL={RENDER_EXTERNAL_URL!r}, PORT={PORT!r}, TELEGRAM_TOKEN set={bool(TELEGRAM_TOKEN)}, DEEPGRAM_API_KEY set={bool(DEEPGRAM_API_KEY)}")
 
-# Инициализация Deepgram SDK
+# Инициируем Deepgram и Translator
 dg_client = Deepgram(DEEPGRAM_API_KEY)
+translator = Translator()
 
 async def _transcribe_with_deepgram(path: str) -> str:
-    # Читаем файл и готовим источник для API
+    """Асинхронная транскрипция через Deepgram."""
     audio_bytes = open(path, 'rb').read()
     source = {'buffer': audio_bytes, 'mimetype': 'audio/wav'}
-    # Опции: автоматическая пунктуация и распознавание языка (auto)
     options = {'punctuate': True}
     response = await dg_client.transcription.prerecorded(source, options)
-    # Текст в первом канале, первой альтернативе
     return response['results']['channels'][0]['alternatives'][0]['transcript']
 
 
 def transcribe_voice(path: str) -> str:
-    """Синхронная обёртка для асинхронного вызова Deepgram."""
+    """Синхронная обёртка для Deepgram SDK."""
     loop = asyncio.new_event_loop()
     try:
         return loop.run_until_complete(_transcribe_with_deepgram(path))
@@ -54,35 +57,33 @@ def transcribe_voice(path: str) -> str:
 
 
 def handle_voice(update: Update, context: CallbackContext):
-    """Скачивает голосовое, конвертирует, транскрибирует и отвечает текстом."""
+    """Скачивает голосовое, конвертирует, транскрибирует и переводит."""
+    ogg_path = wav_path = None
     try:
         voice = update.message.voice or update.message.audio
         tg_file = context.bot.get_file(voice.file_id)
 
-        # Сохраняем ogg во временный файл
         with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as ogg_f:
             tg_file.download(custom_path=ogg_f.name)
             ogg_path = ogg_f.name
 
-        # Конвертируем в wav
         wav_path = ogg_path.replace(".ogg", ".wav")
         AudioSegment.from_file(ogg_path).export(wav_path, format="wav")
 
-        # Транскрибируем через Deepgram
-        text = transcribe_voice(wav_path)
-        update.message.reply_text(text)
+        orig_text = transcribe_voice(wav_path)
+        translated = translator.translate(orig_text, dest='en').text
+        update.message.reply_text(translated)
 
     except TelegramError as te:
         logging.error(f"Telegram error: {te}")
     except Exception as e:
-        logging.error(f"Error in transcription: {e}")
+        logging.error(f"Error in transcription/translation: {e}")
         try:
-            update.message.reply_text("Ошибка при распознавании аудио.")
+            update.message.reply_text("Ошибка при распознавании или переводе аудио.")
         except Exception:
             pass
     finally:
-        # Удаляем временные файлы
-        for path in (locals().get('ogg_path'), locals().get('wav_path')):
+        for path in (ogg_path, wav_path):
             if path and os.path.exists(path):
                 os.remove(path)
 
@@ -92,11 +93,9 @@ def main():
     dp = updater.dispatcher
     dp.add_handler(MessageHandler(Filters.voice | Filters.audio, handle_voice))
 
-    # Полный URL webhook
     webhook_url = f"https://{RENDER_EXTERNAL_URL}/{TELEGRAM_TOKEN}"
     logging.info(f"Setting webhook: {webhook_url}")
 
-    # Запуск webhook
     updater.start_webhook(
         listen="0.0.0.0",
         port=PORT,
