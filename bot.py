@@ -20,7 +20,7 @@ from telegram.error import TelegramError
 # Переменные окружения (Render -> Environment)
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY")
-RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL")  # без протокола, напр.: my-bot.onrender.com
+RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL")  # без протокола
 PORT = int(os.environ.get("PORT", "443"))
 
 # Обрезаем префиксы из URL
@@ -35,24 +35,20 @@ logging.info(
 )
 
 # Инициализация Deepgram SDK v2
-try:
-    dg_client = Deepgram(DEEPGRAM_API_KEY)
-except Exception as e:
-    logging.critical(f"Failed to initialize Deepgram client: {e}")
-    raise
-
+dg_client = Deepgram(DEEPGRAM_API_KEY)
 # Инициализация переводчика
 translator = Translator()
 
 async def _transcribe_with_deepgram(path: str) -> str:
-    """Асинхронная транскрипция через Deepgram."""
+    """Асинхронная транскрипция через Deepgram с указанием языка."""
     with open(path, 'rb') as f:
         audio_bytes = f.read()
     source = {'buffer': audio_bytes, 'mimetype': 'audio/wav'}
-    options = {'punctuate': True}
+    # Добавляем language='ru' для корректного распознавания русской речи
+    options = {'punctuate': True, 'language': 'ru'}
     response = await dg_client.transcription.prerecorded(source, options)
-    # Берём первый канал и альтернативу
     return response['results']['channels'][0]['alternatives'][0]['transcript']
+
 
 def transcribe_voice(path: str) -> str:
     """Синхронная обёртка для Deepgram SDK."""
@@ -62,10 +58,10 @@ def transcribe_voice(path: str) -> str:
     finally:
         loop.close()
 
+
 def handle_voice(update: Update, context: CallbackContext):
     """Скачивает голосовое, конвертирует, транскрибирует и переводит. Возвращает и оригинал, и перевод."""
-    ogg_path = None
-    wav_path = None
+    ogg_path = wav_path = None
     try:
         voice = update.message.voice or update.message.audio
         tg_file = context.bot.get_file(voice.file_id)
@@ -87,7 +83,7 @@ def handle_voice(update: Update, context: CallbackContext):
         orig_text = orig_text.strip()
         logging.info(f"Original transcript: {orig_text}")
 
-        # Переводим с указанием source language 'ru'
+        # Переводим с указанием исходного языка 'ru'
         translated = translator.translate(orig_text, src='ru', dest='en').text
         logging.info(f"Translated text: {translated}")
 
@@ -109,6 +105,7 @@ def handle_voice(update: Update, context: CallbackContext):
             if path and os.path.exists(path):
                 os.remove(path)
 
+
 def main():
     updater = Updater(TELEGRAM_TOKEN, use_context=True)
     dp = updater.dispatcher
@@ -128,6 +125,7 @@ def main():
 
     logging.info("Bot started via webhook")
     updater.idle()
+
 
 if __name__ == "__main__":
     main()
