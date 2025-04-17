@@ -34,20 +34,25 @@ logging.info(
     f"TOKEN set={bool(TELEGRAM_TOKEN)}, DEEPGRAM_API_KEY set={bool(DEEPGRAM_API_KEY)}"
 )
 
-# Инициализация Deepgram и Translator
-# Deepgram SDK v2:
-dg_client = Deepgram(DEEPGRAM_API_KEY)
-# Google Translate:
+# Инициализация Deepgram SDK v2
+try:
+    dg_client = Deepgram(DEEPGRAM_API_KEY)
+except Exception as e:
+    logging.critical(f"Failed to initialize Deepgram client: {e}")
+    raise
+
+# Инициализация переводчика
 translator = Translator()
 
 async def _transcribe_with_deepgram(path: str) -> str:
     """Асинхронная транскрипция через Deepgram."""
-    audio_bytes = open(path, 'rb').read()
+    with open(path, 'rb') as f:
+        audio_bytes = f.read()
     source = {'buffer': audio_bytes, 'mimetype': 'audio/wav'}
     options = {'punctuate': True}
     response = await dg_client.transcription.prerecorded(source, options)
+    # Берём первый канал и альтернативу
     return response['results']['channels'][0]['alternatives'][0]['transcript']
-
 
 def transcribe_voice(path: str) -> str:
     """Синхронная обёртка для Deepgram SDK."""
@@ -57,15 +62,15 @@ def transcribe_voice(path: str) -> str:
     finally:
         loop.close()
 
-
 def handle_voice(update: Update, context: CallbackContext):
     """Скачивает голосовое, конвертирует, транскрибирует и переводит. Возвращает и оригинал, и перевод."""
-    ogg_path = wav_path = None
+    ogg_path = None
+    wav_path = None
     try:
         voice = update.message.voice or update.message.audio
         tg_file = context.bot.get_file(voice.file_id)
 
-        # Сохраняем ogg
+        # Сохраняем в ogg
         with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as ogg_f:
             tg_file.download(custom_path=ogg_f.name)
             ogg_path = ogg_f.name
@@ -74,19 +79,17 @@ def handle_voice(update: Update, context: CallbackContext):
         wav_path = ogg_path.replace(".ogg", ".wav")
         AudioSegment.from_file(ogg_path).export(wav_path, format="wav")
 
-       orig_text = transcribe_voice(wav_path)
-if not orig_text:
-    update.message.reply_text("Не удалось распознать речь в этом аудио.")
-    return
+        # Транскрибируем
+        orig_text = transcribe_voice(wav_path)
+        if not orig_text:
+            update.message.reply_text("Не удалось распознать речь в этом аудио.")
+            return
+        orig_text = orig_text.strip()
+        logging.info(f"Original transcript: {orig_text}")
 
-orig_text = orig_text.strip()
-logging.info(f"Original transcript: {orig_text}")
-
-translated = translator.translate(orig_text, src='ru', dest='en').text
-logging.info(f"Translated text: {translated}")
-
-response = f"Original: {orig_text}\nTranslation: {translated}"
-update.message.reply_text(response)
+        # Переводим с указанием source language 'ru'
+        translated = translator.translate(orig_text, src='ru', dest='en').text
+        logging.info(f"Translated text: {translated}")
 
         # Отправляем оба текста
         response = f"Original: {orig_text}\nTranslation: {translated}"
@@ -101,10 +104,10 @@ update.message.reply_text(response)
         except Exception:
             pass
     finally:
+        # Удаляем временные файлы
         for path in (ogg_path, wav_path):
             if path and os.path.exists(path):
                 os.remove(path)
-
 
 def main():
     updater = Updater(TELEGRAM_TOKEN, use_context=True)
@@ -115,6 +118,7 @@ def main():
     webhook_url = f"https://{RENDER_EXTERNAL_URL}/{TELEGRAM_TOKEN}"
     logging.info(f"Setting webhook: {webhook_url}")
 
+    # Запуск webhook
     updater.start_webhook(
         listen="0.0.0.0",
         port=PORT,
@@ -124,7 +128,6 @@ def main():
 
     logging.info("Bot started via webhook")
     updater.idle()
-
 
 if __name__ == "__main__":
     main()
